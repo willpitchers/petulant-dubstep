@@ -1,0 +1,1429 @@
+### R code from vignette source 'TackArabidopsisScript.Rnw'
+### Encoding: UTF-8
+
+###################################################
+### code chunk number 1: read_in_data_&_functions
+###################################################
+
+rm( list= ls())
+
+# we start by loading libraries
+require( MASS )
+require( car )
+require( reshape )
+require( ggplot2 )
+require( plyr )
+require( xtable )
+require( vcd )
+
+# version information for troubleshooting purposes
+R.Version()
+
+### I'm going to read in some functions up here before we start:
+
+# this function works with the 'pairs' plotting function to add numerical correlation estimates to the plots
+panel.cor <- function(x, y, digits=2) {
+  r <- cor(x, y)
+	par( usr =c(0, 1, 0, 1))
+	Cor <- format(c(r, 0.123456789), digits=digits)[1]
+ 	text(0.5, 0.5, paste("r=", Cor), cex=1.5)
+}
+
+# univariate Rsquared calculator
+Rsq <- function( model ){
+  fitted.variance <- var(model$fitted)
+	total.variance	<- var(model$fitted) + var(model$resid)
+	fitted.variance / total.variance
+}
+
+# subset data by keeping only named columns
+keepCols <- function(data, cols) {
+  return( data[ , names(data) %in% cols] )
+	}
+
+####
+
+#setwd( "../data" )
+
+# Here will be a line to read in the data.csv as it comes out of !EXCALIBUR!
+
+junction_a <- read.table( "thaliana_alphas_patched_2.tsv", nrows= system( "wc -l thaliana_alphas_patched_2.tsv" ), header= T, sep='\t' )
+
+junction_t <- read.table( "thaliana_tandems_patched_2.tsv", nrows= system( "wc -l thaliana_tandems_patched_2.tsv" ), header= T, sep='\t' )
+
+all_reads <- read.table( "ABC_raw_lens.tsv", nrows=system( "wc -l ABC_raw_lens.tsv" ), header= T, sep='\t' )
+
+str( junction_a )	;	head( junction_a )
+str( junction_t )	;	head( junction_t )
+str( all_reads )	;	head( all_reads )
+
+
+###################################################
+### code chunk number 2: filter_zero_reads
+###################################################
+# make a factor to specify whether any rep had 0 reads
+all_reads$rep_0 <- factor( ifelse( apply( all_reads[,2:4], 1, min )==0, 0, 1))
+
+# here all_reads is getting a vector to sepcify the no. reads per gene
+all_reads$no_reads <- rowSums( all_reads[,2:4] )
+
+#...and another to specify the variance among rep.s
+all_reads$rep_var <- apply( all_reads[,2:4], 1, var )
+
+#...and another to specify the ratio of no. reads:gene length
+all_reads$prop_reads <- rowMeans( all_reads[,2:4]) / all_reads$Gene_Length
+
+nall <- dim( all_reads )[1]
+nzeros <- length( all_reads$rep_0[ all_reads$rep_0 =="0" ])
+nkeepers <- length( all_reads$rep_0[ all_reads$rep_0 =="1" ])
+
+# now we'll try to get an idea of what 'repesentative no. reads' means...
+# no. reads per gene_length might indicate level of transcription?
+# variable no. reads between rep.s might ba sign of problems?
+# I suggest tossing out the lines with the highest rep. variance
+
+all_reads <- all_reads[ all_reads$rep_0 !=0, ]
+
+# expression is going to need to be expressed as RPKM later on; may as well fix now
+millions <- mean( colSums(all_reads[, 2:4]) ) / 10^6
+all_reads$RKPM <- rowMeans( all_reads[, 2:4] ) /( all_reads$Gene_Length/1000 )/ millions
+
+
+
+###################################################
+### code chunk number 3: figure_1
+###################################################
+#pdf( "../outputs/variance_trimming.pdf" )
+  hist( log(all_reads$rep_var), xlab="inter-rep. variance", main="", breaks=30 )
+  abline( v= quantile( log(all_reads$rep_var), probs=0.95 ), col="red" )
+#dev.off()
+
+
+###################################################
+### code chunk number 4: filter_by_variance
+###################################################
+top5perc <- dim( all_reads[ all_reads$rep_var >= quantile( all_reads$rep_var, probs=0.95 ) , ] )[1]
+all_reads <- all_reads[ all_reads$rep_var < quantile( all_reads$rep_var, probs=0.95 ) , ]
+dim( all_reads )
+
+
+###################################################
+### code chunk number 5: figure_2
+###################################################
+#pdf( "../outputs/weirdness_check.pdf" )
+  # tight correlations between no. reads, mean reads/bp and rep. variance, but no relationship to gene_length
+  pairs( all_reads[, c(5,7:9)], lower.panel=panel.cor )
+#dev.off()
+
+
+###################################################
+### code chunk number 6: Simplify_class
+###################################################
+# 1 more thing to filter  <-  the class factor beeds to be cleaned up
+# 'CREX' classes need to be excluded
+
+levels( junction_a$class )
+levels( junction_t$class )
+
+simpleclass_a <- c("-ALTA"="ALTA", "-ALTA;-ALTD"="ALTP", "-ALTA;+ALTD"="ALTP", "-ALTA;+CREX"="CREX", "-ALTD"="ALTD", "-ALTD;-ALTA"="ALTP", "-ALTD;+ALTA"="ALTP", "+ALTA"="ALTA", "+ALTA;-ALTD"="ALTP", "+ALTA;+ALTD"="ALTP", "+ALTD"="ALTD", "+ALTD;-ALTA"="ALTP", "+ALTD;+ALTA"="ALTP", "+CREX"="CREX", "+IR"="IR" )
+    junction_a$class2 <- factor( simpleclass_a[ junction_a$class ])
+    junction_a <- junction_a[ junction_a$class2 != "CREX", ]
+    junction_a$class2 <- factor( junction_a$class2 )
+    summary(junction_a$class2)
+
+simpleclass_t <- c("-ALTA"="ALTA", "-ALTA;-ALTD"="ALTP", "-ALTA;+ALTD"="ALTP", "-ALTD"="ALTD", "-ALTD;-ALTA"="ALTP", "-ALTD;+ALTA"="ALTP", "-ALTD;+CREX"="CREX", "+ALTA"="ALTA", "+ALTA;-ALTD"="ALTP", "+ALTA;+ALTD"="ALTP", "+ALTD"="ALTD", "+ALTD;-ALTA"="ALTP", "+ALTD;+ALTA"="ALTP", "+CREX"="CREX",  "+IR"="IR" )
+    junction_t$class2 <- factor( simpleclass_t[ junction_t$class ])
+    junction_t <- junction_t[ junction_t$class2 != "CREX", ]
+    junction_t$class2 <- factor( junction_t$class2 )
+    summary(junction_t$class2)
+
+
+###################################################
+### code chunk number 7: use_filtered_gene_list_to_filter_junctions
+###################################################
+# this code chunk splits the 'pair' ID into gene names and then uses the list of genes from thal_1thal_2thal_3_raw_lens.tsv to subset the two junction datasets to pairs where both paralogs survived the filtering steps
+junction_a$pair_1 <- factor( sub("\\-[[:alnum:]]+", "", junction_a$pair) )
+junction_a$pair_2 <- factor( sub("[[:alnum:]]+\\-", "", junction_a$pair) )
+
+junction_t$pair_1 <- factor( sub("\\-[[:alnum:]]+", "", junction_t$pair) )
+junction_t$pair_2 <- factor( sub("[[:alnum:]]+\\-", "", junction_t$pair) )
+
+# and keep only pairs where both partners made it through the filtering
+junction_a <- junction_a[ junction_a$pair_1 %in% all_reads$gene_name & junction_a$pair_2 %in% all_reads$gene_name, ]
+
+junction_t <- junction_t[ junction_t$pair_1 %in% all_reads$gene_name & junction_t$pair_2 %in% all_reads$gene_name, ]
+
+dim( junction_a )
+dim( junction_a[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ], ] )
+dim( junction_a[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ], ] )
+
+dim( junction_t )
+dim( junction_t[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ], ] )
+dim( junction_t[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ], ] )
+
+
+# this ID is what we'll use to loop analyses over
+junction_a$uniqID <- factor( paste( junction_a$pair, junction_a$j1, junction_a$class, sep="", coll=""))
+junction_t$uniqID <- factor( paste( junction_t$pair, junction_t$j1, junction_t$class, sep="", coll=""))
+
+dim( junction_a )
+dim( junction_t )
+
+
+###################################################
+### code chunk number 8: sum_cons_&_alts
+###################################################
+# here I'll make vectors of counts for all cons and all alts
+junction_a$g1_all_cons <- rowSums( junction_a[, c(6,8,10) ] )
+junction_a$g1_all_alts <- rowSums( junction_a[, c(5,7,9) ] )
+
+junction_a$g2_all_cons <- rowSums( junction_a[, c(12,14,16) ] )
+junction_a$g2_all_alts <- rowSums( junction_a[, c(11,13,15) ] )
+
+junction_t$g1_all_cons <- rowSums( junction_t[, c(6,8,10) ] )
+junction_t$g1_all_alts <- rowSums( junction_t[, c(5,7,9) ] )
+
+junction_t$g2_all_cons <- rowSums( junction_t[, c(12,14,16) ] )
+junction_t$g2_all_alts <- rowSums( junction_t[, c(11,13,15) ] )
+
+
+###################################################
+### code chunk number 9: read_no_summary
+###################################################
+expression <- read.table( "ABC_filtered.tsv", nrows=system( "wc -l ABC_filtered.tsv" ), header= T, sep='\t' )
+names( expression )
+
+expression$all_cons <- rowSums( expression[, c(6, 8, 10) ] )
+expression$all_alts <- rowSums( expression[, c(5, 7, 9) ] )
+expression$all_reads <- expression$all_cons + expression$all_alts
+
+summary( expression$all_alts )
+quantile( expression$all_alts, probs=c(0.01, 0.02, 0.025, 0.03, 0.04, 0.05, 0.1, 0.15) )
+
+ddply( expression, .( class ), summarize, min_read_alts=min( all_alts ), quant_1=quantile( all_alts, 0.01 ), 
+                              quant_2=quantile( all_alts, 0.02 ), quant_2.5=quantile( all_alts, 0.025 ),
+                              quant_3=quantile( all_alts, 0.03 ), quant_4=quantile( all_alts, 0.04 ), 
+                              quant_5=quantile( all_alts, 0.05 ), quant_10=quantile( all_alts, 0.10 ), 
+                              quant_15=quantile( all_alts, 0.15 ) )
+
+
+###################################################
+### code chunk number 10: discard_junctions_with_no_alts
+###################################################
+# here I'll count how many times BOTH paralogs have no alternative reads, i.e. where this is TRUE
+summary( junction_a$g1_all_alts == 0 & junction_a$g2_all_alts == 0 )
+summary( junction_t$g1_all_alts == 0 & junction_t$g2_all_alts == 0 )
+
+summary( junction_a$g1_all_cons == 0 | junction_a$g2_all_cons == 0 )
+summary( junction_t$g1_all_cons == 0 | junction_t$g2_all_cons == 0 )
+
+junction_a <- junction_a[ junction_a$g1_all_cons != 0 & junction_a$g2_all_cons != 0, ]
+junction_t <- junction_t[ junction_t$g1_all_cons != 0 & junction_t$g2_all_cons != 0, ]
+
+dim( junction_a )
+dim( junction_a[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ], ] )
+dim( junction_a[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ], ] )
+
+dim( junction_t )
+dim( junction_t[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ], ] )
+dim( junction_t[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ], ] )
+
+
+###################################################
+### code chunk number 11: alternative_filterings
+###################################################
+# ## ALTERNATIVE FILTERING SCHEME
+# junction_a <- junction_a[ junction_a$g1r1cons >5 & junction_a$g1r2cons >5 & junction_a$g1r3cons >5 & 
+#                           junction_a$g2r1cons >5 & junction_a$g2r2cons >5 & junction_a$g2r3cons >5, ]
+# junction_t <- junction_t[ junction_t$g1r1cons >5 & junction_t$g1r2cons >5 & junction_t$g1r3cons >5 & 
+#                           junction_t$g2r1cons >5 & junction_t$g2r2cons >5 & junction_t$g2r3cons >5, ]
+
+junc_a_sum_g1 <- (junction_a$g1_all_cons + junction_a$g1_all_alts)
+junc_a_sum_g2 <- (junction_a$g2_all_cons + junction_a$g2_all_alts)
+junc_a_prop_g1 <- junc_a_sum_g1 / (junc_a_sum_g1 + junc_a_sum_g2)
+junc_a_prop_g2 <- junc_a_sum_g2 / (junc_a_sum_g1 + junc_a_sum_g2)
+junc_a_prop_diff <- abs( junc_a_prop_g1 - junc_a_prop_g2 )
+
+junc_t_sum_g1 <- (junction_t$g1_all_cons + junction_t$g1_all_alts)
+junc_t_sum_g2 <- (junction_t$g2_all_cons + junction_t$g2_all_alts)
+junc_t_prop_g1 <- junc_t_sum_g1 / (junc_t_sum_g1 + junc_t_sum_g2)
+junc_t_prop_g2 <- junc_t_sum_g2 / (junc_t_sum_g1 + junc_t_sum_g2)
+junc_t_prop_diff <- abs( junc_t_prop_g1 - junc_t_prop_g2 )
+
+junction_a <- junction_a[ junc_a_prop_diff < quantile( junc_a_prop_diff, 0.95 ) ,]
+junction_t <- junction_t[ junc_t_prop_diff < quantile( junc_t_prop_diff, 0.95 ) ,]
+
+
+###################################################
+### code chunk number 12: write_out_one/both_lists
+###################################################
+# here I'll make a factor to indicate whether both pairs have >0 alt counts
+g1_alts_only <- factor( ifelse( junction_a$g2_all_alts == 0 & junction_a$g1_all_alts != 0,  1, 0))
+g2_alts_only <- factor( ifelse( junction_a$g1_all_alts == 0 & junction_a$g2_all_alts != 0,  1, 0))
+  junction_a$one_gene_alts_only <- factor( ifelse( g1_alts_only==0 & g2_alts_only==0, "both", "one"))
+
+# and the same thing for the tandems
+g1_alts_only <- factor( ifelse( junction_t$g2_all_alts == 0 & junction_t$g1_all_alts != 0,  1, 0))
+g2_alts_only <- factor( ifelse( junction_t$g1_all_alts == 0 & junction_t$g2_all_alts != 0,  1, 0))
+  junction_t$one_gene_alts_only <- factor( ifelse( g1_alts_only==0 & g2_alts_only==0, "both", "one"))
+
+# how many rows make it through the threshold by only 1 or a few reads...
+write.table( junction_a[ junction_a$one_gene_alts_only=="both", ], "../outputs/alphas_both.tsv", sep="\t", quote=F )
+write.table( junction_a[ junction_a$one_gene_alts_only=="one", ], "../outputs/alphas_one.tsv", sep="\t", quote=F )
+
+write.table( junction_t[ junction_t$one_gene_alts_only=="both", ], "../outputs/tandems_both.tsv", sep="\t", quote=F )
+write.table( junction_t[ junction_t$one_gene_alts_only=="one", ], "../outputs/tandems_one.tsv", sep="\t", quote=F )
+
+
+###################################################
+### code chunk number 13: %age_quant_cons
+###################################################
+print( 'alphas' )
+round( summary( junction_a$one_gene_alts_only ) / dim( junction_a )[1], 2)
+print( 'tandems' )
+round( summary( junction_t$one_gene_alts_only ) / dim( junction_t )[1], 2)
+
+
+###################################################
+### code chunk number 14: qual_tables
+###################################################
+
+tab_a <-  c(length( junction_a$class2[ junction_a$class2=="IR" & junction_a$one_gene_alts_only=="both"] ),
+            length( junction_a$class2[ junction_a$class2=="IR" & junction_a$one_gene_alts_only=="one"] ),
+            length( junction_a$class2[ junction_a$class2=="ALTA" & junction_a$one_gene_alts_only=="both"] ),
+            length( junction_a$class2[ junction_a$class2=="ALTA" & junction_a$one_gene_alts_only=="one"] ),
+            length( junction_a$class2[ junction_a$class2=="ALTD" & junction_a$one_gene_alts_only=="both"] ),
+            length( junction_a$class2[ junction_a$class2=="ALTD" & junction_a$one_gene_alts_only=="one"] ),
+            length( junction_a$class2[ junction_a$class2=="ALTP" & junction_a$one_gene_alts_only=="both"] ),
+            length( junction_a$class2[ junction_a$class2=="ALTP" & junction_a$one_gene_alts_only=="one"] ),
+            length( junction_a$class2[ junction_a$one_gene_alts_only=="both"]),
+            length( junction_a$class2[ junction_a$one_gene_alts_only=="one"]) )
+
+tab_mat_a <- matrix( tab_a, ncol=2, byrow=T )
+tab_mat_a <- cbind( tab_mat_a, c((tab_mat_a[,1] / (tab_mat_a[,1] + tab_mat_a[,2]) ) *100) )
+
+table1 <- xtable( matrix(tab_mat_a, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), caption="alphas" )
+
+
+tab_t <-  c(length( junction_t$class2[ junction_t$class2=="IR" & junction_t$one_gene_alts_only=="both"] ),
+            length( junction_t$class2[ junction_t$class2=="IR" & junction_t$one_gene_alts_only=="one"] ),
+            length( junction_t$class2[ junction_t$class2=="ALTA" & junction_t$one_gene_alts_only=="both"] ),
+            length( junction_t$class2[ junction_t$class2=="ALTA" & junction_t$one_gene_alts_only=="one"] ),
+            length( junction_t$class2[ junction_t$class2=="ALTD" & junction_t$one_gene_alts_only=="both"] ),
+            length( junction_t$class2[ junction_t$class2=="ALTD" & junction_t$one_gene_alts_only=="one"] ),
+            length( junction_t$class2[ junction_t$class2=="ALTP" & junction_t$one_gene_alts_only=="both"] ),
+            length( junction_t$class2[ junction_t$class2=="ALTP" & junction_t$one_gene_alts_only=="one"] ),
+            length( junction_t$class2[ junction_t$one_gene_alts_only=="both"] ),
+            length( junction_t$class2[ junction_t$one_gene_alts_only=="one"] ))
+
+tab_mat_t <- matrix( tab_t, ncol=2, byrow=T )
+tab_mat_t <- cbind( tab_mat_t, c((tab_mat_t[,1] / (tab_mat_t[,1] + tab_mat_t[,2]) ) *100) )
+
+table2 <- xtable( matrix(tab_mat_t, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), caption="tandems" )
+
+print( table1, include.rownames=T )
+print( table2, include.rownames=T )
+
+# output lists to represent each cell in table
+# think about making one big table to map the whole process from filtering to end...
+
+
+###################################################
+### code chunk number 15: dim_check
+###################################################
+summary( junction_a$one_gene_alts_only )
+summary( junction_a$one_gene_alts_only[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ] ] )
+summary( junction_a$one_gene_alts_only[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ] ] )
+
+summary( junction_t$one_gene_alts_only )
+summary( junction_t$one_gene_alts_only[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ] ] )
+summary( junction_t$one_gene_alts_only[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ] ] )
+
+
+###################################################
+### code chunk number 16: figure_3
+###################################################
+#pdf( "../outputs/alt_splice_diffs.pdf" )
+  par( mfrow= c(2,1) )
+  hist( junction_a$g1_all_alts - junction_a$g2_all_alts, xlim=c(-500,500), breaks=100, main="alphas", 
+        xlab="g1 alt. count - g2 alt. count" )
+  hist( junction_t$g1_all_alts - junction_t$g2_all_alts, xlim=c(-500,500), breaks=100, main="tandems", 
+        xlab="g1 alt. count - g2 alt. count" )
+  par( mfrow= c(1,1) )
+#dev.off()
+
+
+###################################################
+### code chunk number 17: qdiff
+###################################################
+summary( junction_a$g1_all_alts - junction_a$g2_all_alts )
+summary( junction_t$g1_all_alts - junction_t$g2_all_alts )
+
+ma <- max( abs( junction_a$g1_all_alts - junction_a$g2_all_alts ))
+mt <- max( abs( junction_t$g1_all_alts - junction_t$g2_all_alts ))
+
+junction_a$qdiff <- abs( ((junction_a$g1_all_alts) / junction_a$g1_all_cons) - 
+                          ((junction_a$g2_all_alts) / junction_a$g2_all_cons ))
+
+junction_t$qdiff <- abs( ((junction_t$g1_all_alts) / junction_t$g1_all_cons) - 
+                          ((junction_t$g2_all_alts) / junction_t$g2_all_cons ))
+
+write.table( junction_a[ order( junction_a$qdiff, decreasing=T ), ], "../outputs/alpha_junction_ordered.tsv", sep='\t', quote=F )
+write.table( junction_t[ order( junction_t$qdiff, decreasing=T ), ], "../outputs/tandem_junction_ordered.tsv", sep='\t', quote=F)
+
+
+###################################################
+### code chunk number 18: figure_4
+###################################################
+#pdf( "../outputs/alt_splice_prop_diffs.pdf" )
+  par( mfrow= c(2,1) )
+  hist( abs((junction_a$g1_all_alts / junction_a$g1_all_cons) - (junction_a$g2_all_alts / junction_a$g2_all_cons)), 
+         breaks=50, main="alphas", xlab="g1 alt. prop. - g2 alt. prop." )
+  hist( abs((junction_t$g1_all_alts / junction_t$g1_all_cons) - (junction_t$g2_all_alts / junction_t$g2_all_cons)), 
+        breaks=50, main="tandems", xlab="g1 alt. prop. - g2 alt. prop." )
+  par( mfrow= c(1,1) )
+#dev.off()
+
+
+###################################################
+### code chunk number 19: model_AS_level_by_class
+###################################################
+# express as a proportion for extra-samrt-times
+classmod_a <- lm( abs(junction_a$g1_all_alts - junction_a$g2_all_alts) ~ junction_a$class2 )
+print( 'alphas' )
+summary(classmod_a)
+
+summary( junction_a$class2 )
+
+chi_Alpha <- chisq.test(tab_mat_a[, 1:2 ], rev( levels( junction_a$class2 ) ), simulate.p.value=T )
+chi_Alpha     ;     chi_Alpha$observed - chi_Alpha$expected     ;     rev( levels( junction_a$class2 ))
+
+
+classmod_t <- lm( abs(junction_t$g1_all_alts - junction_t$g2_all_alts) ~ junction_t$class2 )
+print( 'tandems' )
+summary(classmod_t)
+
+summary( junction_t$class2 )
+
+chi_Tandem <- chisq.test(tab_mat_t[, 1:2 ], rev( levels( junction_t$class2 ) ), simulate.p.value=T )
+chi_Tandem     ;     chi_Tandem$observed - chi_Tandem$expected     ;     rev( levels( junction_t$class2 ))
+
+
+###################################################
+### code chunk number 20: figure_5
+###################################################
+#pdf( "../outputs/alt_splice_diffs_by_class_alpha.pdf" )
+  ggplot(junction_a, aes(x=junction_a$class, y= log10( abs(junction_a$g1_all_alts - junction_a$g2_all_alts)))) + 
+          geom_point(colour="blue", alpha=0.4, position="jitter") + 
+          geom_boxplot(outlier.size=0.5, alpha=0.4) + coord_flip() +
+          scale_x_discrete(name="event class") + 
+          scale_y_continuous(name="(log) read count difference between paralogs") + ggtitle("Alphas")
+#dev.off()
+
+
+###################################################
+### code chunk number 21: figure_6
+###################################################
+#pdf( "../outputs/alt_splice_diffs_by_class_tandems.pdf" )
+  ggplot(junction_t, aes(x=junction_t$class, y= log10( abs(junction_t$g1_all_alts - junction_t$g2_all_alts)))) + 
+            geom_point(colour="blue", alpha=0.4, position="jitter") + 
+            geom_boxplot(outlier.size=0.5, alpha=0.4) + coord_flip() +
+            scale_x_discrete(name="event class") + 
+            scale_y_continuous(name="(log) read count difference between paralogs") + ggtitle("Tandems")
+#dev.off()
+
+
+###################################################
+### code chunk number 22: test_quant_cons
+###################################################
+
+# here I'm going to use the log. reg. to ask about quantitative conservation... but only for those events that are qualitatively conserved
+# then: does the event class have an influence?
+junction_a2 <- junction_a[ junction_a$one_gene_alts_only=="both", ]
+junction_t2 <- junction_t[ junction_t$one_gene_alts_only=="both", ]
+
+junction_a2$uniqID <- factor( junction_a2$uniqID )
+junction_t2$uniqID <- factor( junction_t2$uniqID )
+
+dim( junction_a2 )
+dim( junction_a2[ junction_a2$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_a2$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ], ] )
+dim( junction_a2[ junction_a2$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_a2$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ], ] )
+
+dim( junction_t2 )
+dim( junction_t2[ junction_t2$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & junction_t2$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ], ] )
+dim( junction_t2[ junction_t2$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & junction_t2$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ], ] )
+
+# ## SECOND ALTERNATE FILTER <- QUAL. CONS. BUT CONS *&* ALTS NEED 5-READ MIN
+# junction_a3 <- junction_a2[ junction_a2$g1r1alt >5 & junction_a2$g1r1alt >5 & junction_a2$g1r1alt >5 & 
+#                             junction_a2$g2r1alt >5 & junction_a2$g2r1alt >5 & junction_a2$g2r1alt >5, ]
+# junction_t3 <- junction_t2[ junction_t2$g1r1alt >5 & junction_t2$g1r1alt >5 & junction_t2$g1r1alt >5 & 
+#                             junction_t2$g2r1alt >5 & junction_t2$g2r1alt >5 & junction_t2$g2r1alt >5, ]
+# 
+# junction_a3$uniqID <- factor( junction_a3$uniqID )
+# junction_t3$uniqID <- factor( junction_t3$uniqID )
+# 
+# ## THIRD ALTERNATE FILTER <- QUAL. CONS. BUT CONS *&* ALTS NEED 5-READ MIN
+# junction_a4 <- junction_a2[ junction_a2$g1_all_alts >5 & junction_a2$g2_all_alts >5, ]
+# junction_t4 <- junction_t2[ junction_t2$g1_all_alts >5 & junction_t2$g2_all_alts >5, ]
+# 
+# junction_a4$uniqID <- factor( junction_a4$uniqID )
+# junction_t4$uniqID <- factor( junction_t4$uniqID )
+
+
+arabistats <- function( junc ){
+  num <- nlevels( junc$uniqID )
+  IDs <-  levels( junc$uniqID )
+  out <- matrix( NA, ncol=4, nrow=num )
+  for (i in 1:num) {
+    thisjunc <- junc[ junc$uniqID == IDs[i] ,]
+        cons <- c( thisjunc$g1r1cons, thisjunc$g1r2cons, thisjunc$g1r3cons, thisjunc$g2r1cons, thisjunc$g2r2cons, thisjunc$g2r3cons )
+        alts <- c( thisjunc$g1r1alt, thisjunc$g1r2alt, thisjunc$g1r3alt, thisjunc$g2r1alt, thisjunc$g2r2alt, thisjunc$g2r3alt )
+        gene <- factor(c( rep("0", 3), rep("1", 3) ))
+        thismodel <- glm( cbind( cons, alts ) ~ gene, family= binomial )
+        out[i,1] <- summary( thismodel )$coef[2,4]
+        out[i,2:3] <- summary( thismodel )$coef[1:2,1]
+        out[i,4] <- Rsq( thismodel )
+	}
+Out <- data.frame( junc$pair, IDs, out, junc$class, junc$class2 )
+names( Out ) <- c("pair", "IDs", "p_val", "estimate_con", "estimate_alt", "gene_Rsq", "class", "class2" )
+Out
+}
+
+alpha <- arabistats( junction_a2 )
+tandem <- arabistats( junction_t2 )
+
+alpha$pair_1 <- factor( substr( as.character( alpha$pair ), 1, 9 ) )
+alpha$pair_2 <- factor( substr( as.character( alpha$pair ), 11, 20 ) )
+
+tandem$pair_1 <- factor( substr( as.character( tandem$pair ), 1, 9 ) )
+tandem$pair_2 <- factor( substr( as.character( tandem$pair ), 11, 20 ) )
+
+dim( alpha )
+dim( alpha[ alpha$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & alpha$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ] ,] )
+dim( alpha[ alpha$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & alpha$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ] ,] )
+
+dim( tandem )
+dim( tandem[ tandem$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>5 ] & tandem$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>5 ] ,] )
+dim( tandem[ tandem$pair_1 %in% all_reads$gene_name[ all_reads$no_reads>8 ] & tandem$pair_2 %in% all_reads$gene_name[ all_reads$no_reads>8 ] ,] )
+
+
+# alpha <- arabistats( junction_a3 )
+# tandem <- arabistats( junction_t3 )
+
+# alpha <- arabistats( junction_a4 )
+# tandem <- arabistats( junction_t4 )
+
+dim( alpha )
+dim( tandem )
+
+length( alpha$p_val[ alpha$p_val < 0.05 ] ) / length( alpha$p_val )
+length( tandem$p_val[ tandem$p_val < 0.05 ] ) / length( tandem$p_val )
+
+alpha$sig <- factor( ifelse( alpha$p_val < 0.05, "diff", "cons" ) )
+table( alpha$class2, alpha$sig )
+
+tandem$sig <- factor( ifelse( tandem$p_val < 0.05, "diff", "cons" ) )
+table( tandem$class2, tandem$sig )
+
+max( alpha$gene_Rsq[ alpha$p_val < 0.05 ] )
+median( alpha$gene_Rsq[ alpha$p_val < 0.05 ] )
+
+max( tandem$gene_Rsq[ tandem$p_val < 0.05 ] )
+median( tandem$gene_Rsq[ tandem$p_val < 0.05 ] )
+
+
+###################################################
+### code chunk number 23: quant_tables
+###################################################
+
+tab_a2 <- c(length( alpha$class2[ alpha$class2=="IR" & alpha$p_val >= 0.05] ),
+            length( alpha$class2[ alpha$class2=="IR" & alpha$p_val < 0.05] ),
+            length( alpha$class2[ alpha$class2=="ALTA" & alpha$p_val >= 0.05] ),
+            length( alpha$class2[ alpha$class2=="ALTA" & alpha$p_val < 0.05] ),
+            length( alpha$class2[ alpha$class2=="ALTD" & alpha$p_val >= 0.05] ),
+            length( alpha$class2[ alpha$class2=="ALTD" & alpha$p_val < 0.05] ),
+            length( alpha$class2[ alpha$class2=="ALTP" & alpha$p_val >= 0.05] ),
+            length( alpha$class2[ alpha$class2=="ALTP" & alpha$p_val < 0.05] ),
+            length( alpha$class2[ alpha$p_val >= 0.05]),
+            length( alpha$class2[ alpha$p_val < 0.05]) )
+
+tab_mat_a2 <- matrix( tab_a2, ncol=2, byrow=T )
+tab_mat_a2 <- cbind( tab_mat_a2, c((tab_mat_a2[,1] / (tab_mat_a2[,1] + tab_mat_a2[,2]) ) *100) )
+
+table3 <- xtable( matrix(tab_mat_a2, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="alphas - quantitative conservation" )
+
+
+tab_b2 <-c(length( tandem$class2[ tandem$class2=="IR" & tandem$p_val >= 0.05] ),
+            length( tandem$class2[ tandem$class2=="IR" & tandem$p_val < 0.05] ),
+            length( tandem$class2[ tandem$class2=="ALTA" & tandem$p_val >= 0.05] ),
+            length( tandem$class2[ tandem$class2=="ALTA" & tandem$p_val < 0.05] ),
+            length( tandem$class2[ tandem$class2=="ALTD" & tandem$p_val >= 0.05] ),
+            length( tandem$class2[ tandem$class2=="ALTD" & tandem$p_val < 0.05] ),
+            length( tandem$class2[ tandem$class2=="ALTP" & tandem$p_val >= 0.05] ),
+            length( tandem$class2[ tandem$class2=="ALTP" & tandem$p_val < 0.05] ),
+            length( tandem$class2[ tandem$p_val >= 0.05]),
+            length( tandem$class2[ tandem$p_val < 0.05]) )
+
+tab_mat_b2 <- matrix( tab_b2, ncol=2, byrow=T )
+tab_mat_b2 <- cbind( tab_mat_b2, c((tab_mat_b2[,1] / (tab_mat_b2[,1] + tab_mat_b2[,2]) ) *100) )
+
+table4 <- xtable( matrix( tab_mat_b2, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="tandems - quantitative conservation" )
+
+print( table3 )
+print( table4 )
+
+
+###################################################
+### code chunk number 24: figure_7
+###################################################
+#pdf( "../outputs/alt_v_con_splice_diffs_effectsize.pdf" )
+  par( mfrow= c(2,1))
+  hist( alpha$gene_Rsq[ alpha$p_val < 0.05 ], breaks=30, main="alphas", xlab="model R-squared" )
+  hist( tandem$gene_Rsq[ tandem$p_val < 0.05 ], breaks=30, main="tandems", xlab="model R-squared" )
+  par( mfrow= c(1,1))
+#dev.off()
+
+
+###################################################
+### code chunk number 25: pie_bar_data
+###################################################
+
+pie_data_a <- c( summary(junction_a$class2[ junction_a$one_gene_alts_only=="one" ]),
+               ( summary(junction_a$class2[ junction_a$one_gene_alts_only=="both" ]) - 
+                summary( alpha$class2[ alpha$sig=="cons" ] )),
+                 summary( alpha$class2[ alpha$sig=="cons" ] ))
+
+pie_data_mat_a  <- matrix( pie_data_a, ncol=4, byrow=T, dimnames=list( c("non.cons", "qual.cons", "quant.cons"), names(pie_data_a)[1:4] ))
+
+pie_data_t <- c( summary(junction_t$class2[ junction_t$one_gene_alts_only=="one" ]),
+               ( summary(junction_t$class2[ junction_t$one_gene_alts_only=="both" ]) - 
+                 summary( tandem$class2[ tandem$sig=="cons" ] )),
+                 summary( tandem$class2[ tandem$sig=="cons" ] ))
+
+pie_data_mat_t  <- matrix( pie_data_t, ncol=4, byrow=T, dimnames=list( c("non.cons", "qual.cons", "quant.cons"), names(pie_data_a)[1:4] ))
+
+
+barplot( pie_data_mat_a, cex.axis=0.5, cex.names=0.7, legend.text=row.names(pie_data_mat_a), args.legend=list(x=3, y=2000, cex=0.7), col=c( "firebrick", "chocolate", "goldenrod" ), border=NA, space=0.1, xaxt='n' )
+    axis( side=1, at=c( 0.7, 1.7, 2.7, 3.8 ), c("ALTA", "ALTD", "ALTP", "IR"), las=2, cex.axis=0.75 )
+
+barplot( pie_data_mat_t, cex.axis=0.5, cex.names=0.7, legend.text=row.names(pie_data_mat_t), args.legend=list(x=3, y=600, cex=0.7), col=c( "firebrick", "chocolate", "goldenrod" ), border=NA, space=0.1, xaxt='n' )
+    axis( side=1, at=c( 0.7, 1.7, 2.7, 3.8 ), c("ALTA", "ALTD", "ALTP", "IR"), las=2, cex.axis=0.75 )
+
+
+###################################################
+### code chunk number 26: combined_tables_for_MS
+###################################################
+
+tab_a3 <- c( length( alpha$class2[ alpha$class2=="IR" & alpha$p_val >= 0.05] ),
+  	  length(junction_a$class2[junction_a$class2=="IR"])-length(alpha$class2[alpha$class2=="IR" & alpha$p_val >=0.05]),
+            length( alpha$class2[ alpha$class2=="ALTA" & alpha$p_val >= 0.05] ),
+          length(junction_a$class2[junction_a$class2=="ALTA"])-length(alpha$class2[alpha$class2=="ALTA"&alpha$p_val>=0.05]),
+            length( alpha$class2[ alpha$class2=="ALTD" & alpha$p_val >= 0.05] ),
+          length(junction_a$class2[junction_a$class2=="ALTD"])-length(alpha$class2[alpha$class2=="ALTD"&alpha$p_val>=0.05]),
+            length( alpha$class2[ alpha$class2=="ALTP" & alpha$p_val >= 0.05] ),
+          length(junction_a$class2[junction_a$class2=="ALTP"])-length(alpha$class2[alpha$class2=="ALTP"&alpha$p_val>=0.05]),
+            length( alpha$class2[ alpha$p_val >= 0.05]),
+          length(junction_a$class2)-length( alpha$class2[ alpha$p_val>=0.05 ] ) )
+
+tab_mat_a3 <- matrix( tab_a3, ncol=2, byrow=T )
+
+tab_mat_a3 <- cbind( tab_mat_a3, c((tab_mat_a3[,1] / (tab_mat_a3[,1] + tab_mat_a3[,2]) ) *100) )
+
+table_5 <- xtable( matrix(tab_mat_a3, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="alphas - overall conservation" )
+
+
+tab_t3 <- c( length( tandem$class2[ tandem$class2=="IR" & tandem$p_val >= 0.05] ),
+  	  length(junction_t$class2[junction_t$class2=="IR"])-length(tandem$class2[tandem$class2=="IR" & tandem$p_val >=0.05]),
+            length( tandem$class2[ tandem$class2=="ALTA" & tandem$p_val >= 0.05] ),
+      length(junction_t$class2[junction_t$class2=="ALTA"])-length(tandem$class2[tandem$class2=="ALTA"&tandem$p_val>=0.05]),
+            length( tandem$class2[ tandem$class2=="ALTD" & tandem$p_val >= 0.05] ),
+      length(junction_t$class2[junction_t$class2=="ALTD"])-length(tandem$class2[tandem$class2=="ALTD"&tandem$p_val>=0.05]),
+            length( tandem$class2[ tandem$class2=="ALTP" & tandem$p_val >= 0.05] ),
+      length(junction_t$class2[junction_t$class2=="ALTP"])-length(tandem$class2[tandem$class2=="ALTP"&tandem$p_val>=0.05]),
+            length( tandem$class2[ tandem$p_val >= 0.05]),
+      length(junction_t$class2)-length( tandem$class2[ tandem$p_val>=0.05 ] ) )
+
+tab_mat_t3 <- matrix( tab_t3, ncol=2, byrow=T )
+tab_mat_t3 <- cbind( tab_mat_t3, c((tab_mat_t3[,1] / (tab_mat_t3[,1] + tab_mat_t3[,2]) ) *100) )
+
+table_6 <- xtable( matrix(tab_mat_t3, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="tandems - overall conservation" )
+
+print( table_5 )
+print( table_6 )
+
+
+###################################################
+### code chunk number 27: writing_out_lists_for_DT
+###################################################
+
+# _non_cons will be junctions with obviously alternative patterns
+# _qual_cons will be junctions that are qualitively conserved, but not quantitatively so
+# _quant_cons will be junctions that are conserved no matter how I test it.
+
+alpha_non_cons <- junction_a[ junction_a$one_gene_alts_only=="one", ] 
+alpha_qual_cons <- junction_a[ junction_a$one_gene_alts_only=="both" & 
+                                  junction_a$uniqID %in% alpha$IDs[ alpha$sig=="diff" ] ,]
+alpha_quant_cons <- junction_a[ junction_a$one_gene_alts_only=="both" & 
+                                  junction_a$uniqID %in% alpha$IDs[ alpha$sig=="cons" ] ,]
+
+write.csv( alpha_non_cons[ order( alpha_non_cons$qdiff, decreasing=T) ,], "../outputs/alpha_non_cons.csv", quote=F, row.names=F )
+write.csv( alpha_qual_cons[ order( alpha_qual_cons$qdiff, decreasing=T) ,], "../outputs/alpha_qual_cons.csv", quote=F, row.names=F )
+write.csv( alpha_quant_cons[ order( alpha_quant_cons$qdiff, decreasing=T) ,], "../outputs/alpha_quant_cons.csv", quote=F, row.names=F )
+
+
+tandem_non_cons <- junction_t[ junction_t$one_gene_alts_only=="one", ]
+tandem_qual_cons <- junction_t[ junction_t$one_gene_alts_only=="both" & 
+                                  junction_t$uniqID %in% tandem$IDs[ tandem$sig=="diff" ] ,]
+tandem_quant_cons <- junction_t[ junction_t$one_gene_alts_only=="both" & 
+                                  junction_t$uniqID %in% tandem$IDs[ tandem$sig=="cons" ] ,]
+
+write.csv( tandem_non_cons[ order( tandem_non_cons$qdiff, decreasing=T) ,], "../outputs/tandem_non_cons.csv", quote=F, row.names=F )
+write.csv( tandem_qual_cons[ order( tandem_qual_cons$qdiff, decreasing=T) ,], "../outputs/tandem_qual_cons.csv", quote=F, row.names=F )
+write.csv( tandem_quant_cons[ order( tandem_quant_cons$qdiff, decreasing=T) ,],"../outputs/tandem_quant_cons.csv", quote=F, row.names=F)
+
+
+###################################################
+### code chunk number 28: figure_8
+###################################################
+#pdf( "../outputs/pie_replacement_bars.pdf" )
+  par( mfrow= c(1,2) )
+  
+barplot( pie_data_mat_a, cex.axis=1, cex.names=1, col=c( "firebrick", "cornflowerblue", "forestgreen" ), border=NA, space=0.1, xaxt='n', main="Alpha WG duplicates" )
+    axis( side=1, at=c( 0.7, 1.7, 2.7, 3.8 ), c("ALTA", "ALTD", "ALTP", "IR"), las=2, cex.axis=1.25 )
+
+barplot( pie_data_mat_t, cex.axis=1, cex.names=1, col=c( "firebrick", "cornflowerblue", "forestgreen" ), border=NA, space=0.1, xaxt='n', main="Tandem duplicates" )
+    axis( side=1, at=c( 0.7, 1.7, 2.7, 3.8 ), c("ALTA", "ALTD", "ALTP", "IR"), las=2, cex.axis=1.25 )
+#     legend( "topright", inset=c(-0.6, 0), legend=rev( row.names(pie_data_mat_a)), 
+#             fill=rev( c( "firebrick", "cornflowerblue", "forestgreen" )), cex=1.5  )
+
+#dev.off()
+
+
+###################################################
+### code chunk number 29: sing_dup_chisq
+###################################################
+# numbers from Tack: singletons 2868 without nmd, 195 with duplicates 22592 without, 1724 with
+
+Y <- matrix( c(2868, 22592, 195, 1724), ncol=2, dimnames=list( c("sing", "dup"), c("w/o", "with") ) )
+# Y
+chY <- chisq.test( Y, simulate.p.value=T )
+print( 'observed values' )
+chY$observed
+print( 'expected values' )
+chY$expected
+# chY$residuals
+print( 'statistics' )
+assocstats( Y )
+
+
+###################################################
+### code chunk number 30: paralog_pairs_chisq
+###################################################
+# numbers from Tack for paralog pairs and NMD: NN 1317, NY 98, YN 90, YY 34
+
+X <- matrix(c(1317, 98, 90, 34), ncol=2, dimnames=list( c("N", "Y"), c("N", "Y") ) )
+# X
+chX <- chisq.test( X, simulate.p.value=T )
+print('observed values' )
+chX$observed
+print( 'expected values' )
+chX$expected
+print( 'statistics' )
+assocstats( X )
+
+
+###################################################
+### code chunk number 31: quant_NMD_analysis
+###################################################
+
+junction_a$quant_con <- rep( "N", nrow( junction_a ) )
+junction_a$quant_con[ junction_a$uniqID %in% alpha$IDs[ alpha$sig=="cons" ] ] <- "Y"
+
+junction_t$quant_con <- rep( "N", nrow( junction_t ) )
+junction_t$quant_con[ junction_t$uniqID %in% tandem$IDs[ tandem$sig=="cons" ] ] <- "Y"
+
+# first up i need to read in the NMD data
+nmd_alpha <- read.csv( "../data/nmd_out_2_alphas.csv", header=FALSE )
+nmd_tandem <- read.csv( "../data/nmd_out_2_tandems.csv", header=FALSE )
+  names( nmd_alpha ) <- names( nmd_tandem ) <- c( 'g1', 'g2', 'g1_nmd', 'g2_nmd' )
+
+# summary( nmd_alpha )  ; summary( nmd_tandem )
+
+junction_a_temp <- merge( x=junction_a, y=nmd_alpha[, c(1, 3)], by.x="pair_1", by.y="g1"  )
+  junction_a_nmd <- merge( x=junction_a_temp, y=nmd_alpha[, c(2, 4)], by.x="pair_2", by.y="g2"  )
+
+junction_t_temp <- merge( x=junction_t, y=nmd_tandem[, c(1, 3)], by.x="pair_1", by.y="g1"  )
+  junction_t_nmd <- merge( x=junction_t_temp, y=nmd_tandem[, c(2, 4)], by.x="pair_2", by.y="g2"  )
+
+
+print('do some kinds of junctions get more nmd?')
+print( 'alphas' )
+nmd_mod_a1 <- glm( cbind( junction_a_nmd$g1_nmd, junction_a_nmd$g2_nmd ) ~ junction_a_nmd$class, family=binomial )
+  summary( nmd_mod_a1 )$coef
+
+print( 'tandems' )
+nmd_mod_t1 <- glm( cbind( junction_t_nmd$g1_nmd, junction_t_nmd$g2_nmd ) ~ junction_t_nmd$class, family=binomial )
+  summary( nmd_mod_t1 )$coef
+print('NO <- there do not appear to be differences between junction classes')
+
+
+print('do qualitatively conserved junctions get less nmd?')
+print( 'alphas' )
+nmd_mod_a2 <- glm( cbind( junction_a_nmd$g1_nmd, junction_a_nmd$g2_nmd ) ~junction_a_nmd$one_gene_alts_only, family=binomial)
+  summary( nmd_mod_a2 )$coef
+
+print( 'tandems' )
+nmd_mod_t2 <- glm( cbind( junction_t_nmd$g1_nmd, junction_t_nmd$g2_nmd ) ~junction_t_nmd$one_gene_alts_only, family=binomial)
+  summary( nmd_mod_t2 )$coef
+print('NO  <- there appears to be no difference')
+
+
+print('do quantitative conserved junctions get less nmd?')
+print( 'alphas' )
+nmd_mod_a3 <- glm( cbind( junction_a_nmd$g1_nmd, junction_a_nmd$g2_nmd ) ~ junction_a_nmd$quant_con, family=binomial )
+  summary( nmd_mod_a3 )$coef
+
+print( 'tandems' )
+nmd_mod_t3 <- glm( cbind( junction_t_nmd$g1_nmd, junction_t_nmd$g2_nmd ) ~ junction_t_nmd$quant_con, family=binomial )
+  summary( nmd_mod_t3 )$coef
+print('NO  <- there still appears to be no difference')
+
+
+table( junction_a_nmd$g1_nmd, junction_a_nmd$g2_nmd )
+table( junction_t_nmd$g1_nmd, junction_t_nmd$g2_nmd )
+
+
+
+###################################################
+### code chunk number 32: expression_Data_munging
+###################################################
+
+# so what is the actual question? <- is there an association between expression levels and conservation?
+# how similar is expression between partners?
+# test 1: if there is conservation, are the expression levels more similar?
+# test 2: how well does expression of one paralog predict that of the other?
+
+# expression needs to be expressed (ha-ha) as RPKM
+# reads per kilobase per million= [# of mapped reads]/[length of transcript in kilo base]/[million mapped reads]
+
+all_reads_a <- data.frame( all_reads[ all_reads$gene_name %in% junction_a$pair_1, c(1, 5, 7, 10) ], 
+                           all_reads[ all_reads$gene_name %in% junction_a$pair_2, c(1, 5, 7, 10) ] )
+    names( all_reads_a ) <- c( 'pair_1', 'g1_length', 'g1_reads', 'g1_RPKM', 'pair_2', 'g2_length', 'g2_reads', 'g2_RPKM' )
+    all_reads_a$pair <- paste( all_reads_a$pair_1, '-', all_reads_a$pair_2, coll='', sep='' )
+    all_reads_a$len_diff <- abs( all_reads_a$g1_length - all_reads_a$g2_length )
+    all_reads_a$read_diff <- abs( all_reads_a$g1_reads - all_reads_a$g2_reads )
+    all_reads_a$RPKM_diff <- abs( all_reads_a$g1_RPKM - all_reads_a$g2_RPKM )
+
+
+all_reads_t <- data.frame( all_reads[ all_reads$gene_name %in% junction_t$pair_1, c(1, 5, 7, 10) ], 
+                           all_reads[ all_reads$gene_name %in% junction_t$pair_2, c(1, 5, 7, 10) ])
+    names( all_reads_t ) <- c( 'pair_1', 'g1_length', 'g1_reads', 'g1_RPKM', 'pair_2', 'g2_length', 'g2_reads', 'g2_RPKM' )
+    all_reads_t$pair <- paste( all_reads_t$pair_1, '-', all_reads_t$pair_2, coll='', sep='' )
+    all_reads_t$len_diff <- abs( all_reads_t$g1_length - all_reads_t$g2_length )
+    all_reads_t$read_diff <- abs( all_reads_t$g1_reads - all_reads_t$g2_reads )
+    all_reads_t$RPKM_diff <- abs( all_reads_t$g1_RPKM - all_reads_t$g2_RPKM )
+
+
+# to what extent are 0-read cons a problem?
+
+dim( junction_t[ junction_t$g1r1cons==0 | junction_t$g1r2cons==0 | junction_t$g1r3cons==0 | junction_t$g2r1cons==0 | junction_t$g2r2cons==0 | junction_t$g2r3cons==0, ] )
+
+dim( junction_a[ junction_a$g1r1cons==0 | junction_a$g1r2cons==0 | junction_a$g1r3cons==0 | junction_a$g2r1cons==0 | junction_a$g2r2cons==0 | junction_a$g2r3cons==0, ] )
+
+
+###################################################
+### code chunk number 33: general_expression_differences
+###################################################
+# so what is the actual question? <- is there an association between expression levels and conservation?
+# how similar is expression between partners?
+# test 1: if there is conservation, are the expression levels more similar?
+# test 2: how well does expression of one paralog predict that of the other?
+# test 3:
+sings <- read.table( "../data/singletons.txt", header=F )
+dupes <- read.table( "../data/duplicates.txt", header=F )
+
+filtered <- read.table( "../data/ABC_filtered.tsv", sep='\t', header=T )
+
+filtered <- join( filtered, all_reads[,c(1:10)], 'gene_name' )
+
+filtered$all_nrms <- rowSums( filtered[, c(6,8,10)] )
+filtered$all_alts <- rowSums( filtered[, c(5,7,9)] )
+
+filtered$sing_dupe <- factor( ifelse( filtered$gene_name %in% sings$V1, "S", 
+                                   ifelse( filtered$gene_name %in% dupes$V1, "D", NA ) ))
+
+filtered$prop_diff <- filtered$all_nrms / filtered$all_alts
+
+# we need to filter the filtered dataframe somewhat <- ditch NA's and reads >10^5
+filtered <- na.omit( filtered[ filtered$all_nrms <= 10^5 & filtered$all_alts <= 10^5 & filtered$all_nrms >0 ,] )
+
+print('Frequency of AS')
+# there is more AS going on in duplicates!
+bubble_mod <- lm( filtered$all_alts/filtered$RKPM ~ filtered$sing_dupe )
+    summary( bubble_mod )$coef
+    print( 'there is more AS in duplicates' )
+
+print( 'mean standardized AS per rep.' )
+by( (filtered$all_alts/filtered$RKPM), filtered$sing_dupe, mean )/3
+
+
+# Variety of AS # NB: this may take some time to run on a desktop
+temp <- rep( NA, nlevels( filtered$gene_name ) )
+    for(i in 1:nlevels( filtered$gene_name ) ) {
+      temp[i] <- nrow( filtered[ filtered$gene_name== levels( filtered$gene_name )[i] ,] )
+    }
+
+no_events <- data.frame( levels( filtered$gene_name ), temp )
+names( no_events ) <- c( 'gene_name', 'events' )
+no_events$sing_dupe <- factor( ifelse( no_events$gene_name %in% sings$V1, "S", 
+                                   ifelse( no_events$gene_name %in% dupes$V1, "D", NA ) ))
+
+print( 'variety of AS events' )
+bubble_mod1 <- lm( events ~ sing_dupe, data=no_events )
+    summary( bubble_mod1 )$coef
+    print( 'there is less variety of AS events among singletons...' )
+
+print( '...but only a small difference; mean no. event types' )
+by( no_events$events, no_events$sing_dupe, mean )/3
+# NO <- dupes seem to have more events
+
+
+print("general expression vs. AS")
+exp_mod <- lm( filtered$all_alts ~ filtered$RKPM )
+    summary( exp_mod )$coef
+
+print( 'there is more AS in genes which are expressed at a higher level' )
+
+
+
+###################################################
+### code chunk number 34: systems_bubbles
+###################################################
+
+perc_AS <- ddply( filtered, .(gene_name), summarise, m_all_nrms=max(all_nrms), m_all_alts=max(all_alts), 
+                   m_RKPM=max( RKPM ) )
+          perc_AS$perc_AS <- (perc_AS$m_all_alts / perc_AS$m_all_nrms )*100
+          perc_AS$sing_dupe <- factor( ifelse( perc_AS$gene_name %in% sings$V1, 1, 
+                                   ifelse( perc_AS$gene_name %in% dupes$V1, 2, NA ) ))
+
+perc_mod <- lm( perc_AS ~ sing_dupe, data=perc_AS )
+    summary( perc_mod )
+# no difference
+
+perc_mod1 <- lm( m_RKPM ~ sing_dupe, data=perc_AS )
+    summary( perc_mod1 )
+# dupes expressed less
+
+perc_mod2 <- lm( perc_AS ~ m_RKPM, data=perc_AS )
+    summary( perc_mod2 )
+    cor( perc_AS$perc_AS, perc_AS$m_RKPM )
+# very weak correlation
+
+
+###################################################
+### code chunk number 35: NMD_vs_expression
+###################################################
+
+all_nmd <- data.frame( gene=factor( c( as.character( nmd_alpha$g1 ), as.character( nmd_alpha$g2 ), 
+                                    as.character( nmd_tandem$g1 ), as.character( nmd_tandem$g2 ) ) ),
+                       nmd=factor( c(as.character( nmd_alpha$g1_nmd ), as.character( nmd_alpha$g2_nmd ), 
+                                    as.character( nmd_tandem$g1_nmd ), as.character( nmd_tandem$g2_nmd ) )) )
+
+filtered_nmd <- merge( filtered, all_nmd, by.x="gene_name", by.y="gene" )
+
+ex_nmd_mod <- lm( RKPM ~ nmd, filtered_nmd )
+    summary( ex_nmd_mod )
+    plot( filtered_nmd$RKPM, filtered_nmd$nmd )
+# genes with NMD have slightly higher expression
+
+
+###################################################
+### code chunk number 36: alternate_effect_size_plots
+###################################################
+
+junction_t$g1_RPKM <- ifelse( junction_t$pair_1 %in% all_reads_t$pair_1, all_reads_t$g1_RPKM, NA )
+junction_t$g2_RPKM <- ifelse( junction_t$pair_2 %in% all_reads_t$pair_2, all_reads_t$g2_RPKM, NA )
+junction_t$fold_change <- abs( (junction_t$g1_all_alts/junction_t$g1_RPKM)-(junction_t$g2_all_alts/junction_t$g2_RPKM) )
+
+junction_t$class2 <- factor( junction_t$class2, c("ALTP", "ALTD", "ALTA", "IR") )
+                                  
+#pdf( "../outputs/Tandem_fold_diff.pdf" )
+  ggplot(junction_t, aes(x=junction_t$class2, y=junction_t$fold_change ) ) + 
+            geom_point(colour="blue", alpha=0.4, position="jitter") + 
+            geom_boxplot(outlier.size=0.5, alpha=0.4) + coord_flip() +
+            scale_x_discrete(name="event class" ) +
+            scale_y_continuous(name="fold change in AS between paralogs", limits=c( 0, 200 ) ) + 
+            theme( axis.text.x= element_text( size=15, colour="black" ), axis.title.x= element_text( size=15 ) ) + 
+            theme( axis.text.y= element_text( size=15, angle=45, colour="black" ), axis.title.y= element_text( size=17 ) ) + 
+            theme( plot.title= element_text( size=20 ) ) +
+            ggtitle( "Tandem duplicates" )
+#dev.off()
+
+
+junction_a$g1_RPKM <- ifelse( junction_a$pair_1 %in% all_reads_a$pair_1, all_reads_a$g1_RPKM, NA )
+junction_a$g2_RPKM <- ifelse( junction_a$pair_2 %in% all_reads_a$pair_2, all_reads_a$g2_RPKM, NA )
+junction_a$fold_change <- abs( (junction_a$g1_all_alts/junction_a$g1_RPKM)-(junction_a$g2_all_alts/junction_a$g2_RPKM) )
+
+junction_a$class2 <- factor( junction_a$class2, c("ALTP", "ALTD", "ALTA", "IR") )
+
+#pdf( "../outputs/Alpha_fold_diff.pdf" )
+  ggplot(junction_a, aes(x=junction_a$class2, y=junction_a$fold_change ) )+ 
+    geom_point(colour="blue", alpha=0.4, position="jitter") + 
+    geom_boxplot(outlier.size=0.5, alpha=0.4) + coord_flip() +
+    scale_x_discrete(name="event class" ) +
+    scale_y_continuous(name="fold change in AS between paralogs", limits=c( 0, 200 )) + 
+    theme( axis.text.x= element_text( size=15, colour="black" ), axis.title.x= element_text( size=15 ) ) + 
+    theme( axis.text.y= element_text( size=15, angle=45, colour="black" ), axis.title.y= element_text( size=17 ) ) + 
+    theme( plot.title= element_text( size=20 ) ) +    
+    ggtitle("Alpha WG duplicates")
+#dev.off()
+
+new <- data.frame( rbind( junction_a, junction_t ) )
+new$a_t <-  factor( c( rep( "a", nrow( junction_a )), rep( "t", nrow( junction_t ) ) ) )
+
+new_mod <- lm( new$fold_change ~ new$a_t )
+    summary( new_mod )
+    by( new$fold_change, new$a_t, median )
+# bigger fold changes for tandems
+
+
+###################################################
+### code chunk number 37: TvsA_cons_chisq
+###################################################
+
+# test with qualitative conservation
+qual <- matrix( c( dim( junction_a[ junction_a$one_gene_alts_only=="both", ] )[1], 
+                    dim( junction_t[ junction_t$one_gene_alts_only=="both", ] )[1],
+                    dim( junction_a[ junction_a$one_gene_alts_only=="one", ] )[1], 
+                    dim( junction_t[ junction_t$one_gene_alts_only=="one", ] )[1] ), 
+                 ncol=2, dimnames=list( c("A", "T"), c("con", "not") ) )
+
+chi_qual <- chisq.test( qual, simulate.p.value=T )
+# chi_qual$expected
+
+# test with quantitative conservation
+quant <- matrix( c( dim( alpha[ alpha$sig=="cons", ] )[1], 
+                    dim( tandem[ tandem$sig=="cons", ] )[1],
+                    dim( alpha[ alpha$sig=="diff", ] )[1], 
+                    dim( tandem[ tandem$sig=="diff", ] )[1] ), 
+                 ncol=2, dimnames=list( c("A", "T"), c("con", "not") ) )
+
+chi_quant <- chisq.test( quant, simulate.p.value=T )
+# chi_quant$expected
+chi_quant
+
+chi_quant$observed - chi_quant$expected
+# this is interesting <- alphas are less conserved than expected, tandems more
+
+alpha$a_t <- rep( 'a', nrow( alpha ) )
+tandem$a_t <- rep( 't', nrow( tandem ) )
+both_qual <- rbind( alpha, tandem )
+both_qual$a_t <- factor( both_qual$a_t )
+
+summary( glm( both_qual$sig ~ both_qual$a_t, family=binomial ) )
+
+
+###################################################
+### code chunk number 38: UTR/CDS_analysis
+###################################################
+
+# first I'm going to read in the new UTR/CDS files, then parse the values for the 2 paralog loci to make some new factors
+junc_a_utr <- read.table( "thaliana_alphas_patched_UTR.tsv", nrows= system( "wc -l thaliana_alphas_patched_UTR.tsv" ), header= T, sep='\t' )
+
+junc_a_utr$uniqID <- factor( paste( junc_a_utr$pair, junc_a_utr$j1, junc_a_utr$class, sep="", coll=""))
+
+junc_a_utr$trans <- factor( paste( junc_a_utr$Locus1, junc_a_utr$Locus2, coll='', sep=':' ) )
+junc_a_utr$trans2 <- factor( ifelse( grepl( "UTR", junc_a_utr$trans ), "utr", "cds" ) )
+
+
+junc_t_utr <- read.table( "thaliana_tandems_patched_UTR.tsv", nrows= system( "wc -l thaliana_tandems_patched_UTR.tsv" ), header= T, sep='\t' )
+
+junc_t_utr$uniqID <- factor( paste( junc_t_utr$pair, junc_t_utr$j1, junc_t_utr$class, sep="", coll=""))
+
+junc_t_utr$trans <- factor( paste( junc_t_utr$Locus1, junc_t_utr$Locus2, coll='', sep=':' ) )
+junc_t_utr$trans2 <- factor( ifelse( grepl( "UTR", junc_t_utr$trans ), "utr", "cds" ) )
+
+# now I need to join these new data to the data we've already been using above...
+# first I'll toss the data I *don't* need...
+junc_a_utr <- keepCols( data=junc_a_utr, cols=c( "uniqID", "Locus1", "Locus2", "trans", "trans2" ) )
+junc_t_utr <- keepCols( data=junc_t_utr, cols=c( "uniqID", "Locus1", "Locus2", "trans", "trans2" ) )
+
+# then merge what remains with the datasets I've been using thus far:
+junction_a <- merge( junction_a, junc_a_utr, by.x="uniqID", by.y="uniqID" )
+junction_t <- merge( junction_t, junc_t_utr, by.x="uniqID", by.y="uniqID" )
+
+# does UTR/CDS identity predict AS conservation?
+utr_mod_a1 <- glm( junction_a$one_gene_alts_only ~ junction_a$trans2, family=binomial )
+utr_mod_a2 <- glm( junction_a$one_gene_alts_only ~ junction_a$trans, family=binomial )
+utr_mod_a3 <- lm( junction_a$fold_change ~ junction_a$trans2 )
+# bigger fold change with UTRs...
+
+utr_mod_t1 <- glm( junction_t$one_gene_alts_only ~ junction_t$trans2, family=binomial )
+utr_mod_t2 <- glm( junction_t$one_gene_alts_only ~ junction_t$trans, family=binomial )
+utr_mod_t3 <- lm( junction_t$fold_change ~ junction_t$trans2 )
+# ...but not in tandems!
+
+
+###################################################
+### code chunk number 39: GO_analysis
+###################################################
+
+# write out a list of genes for stuffing into a GO tool
+write.table( all_reads$gene_name, "../outputs/all_gene_names.txt", row.names=F, quote=F )
+
+write.table( junction_a$pair_1[ junction_a$one_gene_alts_only=="both" ], "../outputs/all_gene_names_a_cons.txt", row.names=F, quote=F )
+write.table( junction_t$pair_1[ junction_t$one_gene_alts_only=="both" ], "../outputs/all_gene_names_t_cons.txt", row.names=F, quote=F )
+
+write.table( junction_a$pair_1[ junction_a$one_gene_alts_only=="one" ], "../outputs/all_gene_names_a_alts.txt", row.names=F, quote=F )
+write.table( junction_t$pair_1[ junction_t$one_gene_alts_only=="one" ], "../outputs/all_gene_names_t_alts.txt", row.names=F, quote=F )
+
+
+###################################################
+### code chunk number 40: write_out_supplemental_sprdsts
+###################################################
+junction_a_out <- keepCols( junction_a, c( "uniqID", "pair", "j1", "j2", "class", "one_gene_alts_only", "quant_con" ) )
+junction_t_out <- keepCols( junction_t, c( "uniqID", "pair", "j1", "j2", "class", "one_gene_alts_only", "quant_con" ) )
+
+junction_a_out$qual_con <- factor( ifelse( junction_a_out$one_gene_alts_only == "both", "Y", "N" ))
+junction_t_out$qual_con <- factor( ifelse( junction_t_out$one_gene_alts_only == "both", "Y", "N" ))
+
+junction_a_out$quant_con <- factor( junction_a_out$quant_con )
+junction_t_out$quant_con <- factor( junction_t_out$quant_con )
+
+write.csv( junction_a_out[,-6], "../outputs/Thaliana_Alpha_WG_conservation.csv", quote=F, row.names=F )
+write.csv( junction_t_out[,-6], "../outputs/Thaliana_Tandem_dup_conservation.csv", quote=F, row.names=F )
+
+
+###################################################
+### code chunk number 41: extra_threshold_tables_setup
+###################################################
+
+### make thresholded subsets
+junction_a_t5 <- junction_a[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >5 ] 
+                             & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >5 ] , ]
+
+junction_a_t8 <- junction_a[ junction_a$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >8 ] 
+                             & junction_a$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >8 ] , ]
+
+alpha_t5 <- alpha[ alpha$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >5 ] 
+                             & alpha$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >5 ] , ]
+
+alpha_t8 <- alpha[ alpha$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >8 ] 
+                             & alpha$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >8 ] , ]
+
+
+junction_t_t5 <- junction_t[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >5 ] 
+                             & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >5 ] , ]
+
+junction_t_t8 <- junction_t[ junction_t$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >8 ] 
+                             & junction_t$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >8 ] , ]
+
+tandem_t5 <- tandem[ tandem$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >5 ] 
+                             & tandem$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >5 ] , ]
+
+tandem_t8 <- tandem[ tandem$pair_1 %in% all_reads$gene_name[ all_reads$no_reads >8 ] 
+                             & tandem$pair_2 %in% all_reads$gene_name[ all_reads$no_reads >8 ] , ]
+
+
+
+###################################################
+### code chunk number 42: extra_threshold_tables_qual.
+###################################################
+
+# alpha t5 qual.
+S_tab_a_t5 <- c(length( junction_a_t5$class2[ junction_a_t5$class2=="IR" & junction_a_t5$one_gene_alts_only=="both"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="IR" & junction_a_t5$one_gene_alts_only=="one"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="ALTA" & junction_a_t5$one_gene_alts_only=="both"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="ALTA" & junction_a_t5$one_gene_alts_only=="one"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="ALTD" & junction_a_t5$one_gene_alts_only=="both"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="ALTD" & junction_a_t5$one_gene_alts_only=="one"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="ALTP" & junction_a_t5$one_gene_alts_only=="both"] ),
+            length( junction_a_t5$class2[ junction_a_t5$class2=="ALTP" & junction_a_t5$one_gene_alts_only=="one"] ),
+            length( junction_a_t5$class2[ junction_a_t5$one_gene_alts_only=="both"]),
+            length( junction_a_t5$class2[ junction_a_t5$one_gene_alts_only=="one"]) )
+
+S_tab_mat_a_t5 <- matrix( S_tab_a_t5, ncol=2, byrow=T )
+S_tab_mat_a_t5 <- cbind( S_tab_mat_a_t5, c((S_tab_mat_a_t5[,1] / (S_tab_mat_a_t5[,1] + S_tab_mat_a_t5[,2]) ) *100) )
+
+tableS1 <- xtable( matrix(S_tab_mat_a_t5, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), caption="alphas - qualitative - threshold > 5" )
+
+# alpha t8 qual.
+S_tab_a_t8 <-  c(length( junction_a_t8$class2[ junction_a_t8$class2=="IR" & junction_a_t8$one_gene_alts_only=="both"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="IR" & junction_a_t8$one_gene_alts_only=="one"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="ALTA" & junction_a_t8$one_gene_alts_only=="both"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="ALTA" & junction_a_t8$one_gene_alts_only=="one"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="ALTD" & junction_a_t8$one_gene_alts_only=="both"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="ALTD" & junction_a_t8$one_gene_alts_only=="one"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="ALTP" & junction_a_t8$one_gene_alts_only=="both"] ),
+            length( junction_a_t8$class2[ junction_a_t8$class2=="ALTP" & junction_a_t8$one_gene_alts_only=="one"] ),
+            length( junction_a_t8$class2[ junction_a_t8$one_gene_alts_only=="both"]),
+            length( junction_a_t8$class2[ junction_a_t8$one_gene_alts_only=="one"]) )
+
+S_tab_mat_a_t8 <- matrix( S_tab_a_t8, ncol=2, byrow=T )
+S_tab_mat_a_t8 <- cbind( S_tab_mat_a_t8, c((S_tab_mat_a_t8[,1] / (S_tab_mat_a_t8[,1] + S_tab_mat_a_t8[,2]) ) *100) )
+
+tableS3 <- xtable( matrix(S_tab_mat_a_t8, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), caption="alphas - qualitative - threshold > 8" )
+
+# ALPHAS
+### full size quant.
+print( table1 )
+### t5 quant
+print( tableS1 )
+### t8 quant
+print( tableS3 )
+
+
+# tandem t5 qual.
+S_tab_t_t5 <-  c(length( junction_t_t5$class2[ junction_t_t5$class2=="IR" & junction_t_t5$one_gene_alts_only=="both"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="IR" & junction_t_t5$one_gene_alts_only=="one"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="ALTA" & junction_t_t5$one_gene_alts_only=="both"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="ALTA" & junction_t_t5$one_gene_alts_only=="one"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="ALTD" & junction_t_t5$one_gene_alts_only=="both"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="ALTD" & junction_t_t5$one_gene_alts_only=="one"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="ALTP" & junction_t_t5$one_gene_alts_only=="both"] ),
+            length( junction_t_t5$class2[ junction_t_t5$class2=="ALTP" & junction_t_t5$one_gene_alts_only=="one"] ),
+            length( junction_t_t5$class2[ junction_t_t5$one_gene_alts_only=="both"] ),
+            length( junction_t_t5$class2[ junction_t_t5$one_gene_alts_only=="one"] ))
+
+S_tab_mat_t_t5 <- matrix( S_tab_t_t5, ncol=2, byrow=T )
+S_tab_mat_t_t5 <- cbind( S_tab_mat_t_t5, c((S_tab_mat_t_t5[,1] / (S_tab_mat_t_t5[,1] + S_tab_mat_t_t5[,2]) ) *100) )
+
+tableS2 <- xtable( matrix(S_tab_mat_t_t5, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), caption="tandems - qualitative - threshold > 5" )
+
+# tandem t8 qual.
+S_tab_t_t8 <-  c(length( junction_t_t8$class2[ junction_t_t8$class2=="IR" & junction_t_t8$one_gene_alts_only=="both"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="IR" & junction_t_t8$one_gene_alts_only=="one"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="ALTA" & junction_t_t8$one_gene_alts_only=="both"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="ALTA" & junction_t_t8$one_gene_alts_only=="one"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="ALTD" & junction_t_t8$one_gene_alts_only=="both"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="ALTD" & junction_t_t8$one_gene_alts_only=="one"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="ALTP" & junction_t_t8$one_gene_alts_only=="both"] ),
+            length( junction_t_t8$class2[ junction_t_t8$class2=="ALTP" & junction_t_t8$one_gene_alts_only=="one"] ),
+            length( junction_t_t8$class2[ junction_t_t8$one_gene_alts_only=="both"] ),
+            length( junction_t_t8$class2[ junction_t_t8$one_gene_alts_only=="one"] ))
+
+S_tab_mat_t_t8 <- matrix( S_tab_t_t8, ncol=2, byrow=T )
+S_tab_mat_t_t8 <- cbind( S_tab_mat_t_t8, c((S_tab_mat_t_t8[,1] / (S_tab_mat_t_t8[,1] + S_tab_mat_t_t8[,2]) ) *100) )
+
+tableS4 <- xtable( matrix(S_tab_mat_t_t8, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), caption="tandems - qualitative - threshold > 8" )
+
+
+# TANDEMS
+### full size qual.
+print( table2 )
+### t5 qual.
+print( tableS2 )
+### t8 qual.
+print( tableS4 )
+
+
+
+###################################################
+### code chunk number 43: extra_threshold_tables_quant.
+###################################################
+
+### alphas t5 quant.
+S_tab_a2 <- c(length( alpha_t5$class2[ alpha_t5$class2=="IR" & alpha_t5$p_val >= 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="IR" & alpha_t5$p_val < 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTA" & alpha_t5$p_val >= 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTA" & alpha_t5$p_val < 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTD" & alpha_t5$p_val >= 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTD" & alpha_t5$p_val < 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTP" & alpha_t5$p_val >= 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTP" & alpha_t5$p_val < 0.05] ),
+            length( alpha_t5$class2[ alpha_t5$p_val >= 0.05]),
+            length( alpha_t5$class2[ alpha_t5$p_val < 0.05]) )
+
+S_tab_mat_a2 <- matrix( S_tab_a2, ncol=2, byrow=T )
+S_tab_mat_a2 <- cbind( S_tab_mat_a2, c((S_tab_mat_a2[,1] / (S_tab_mat_a2[,1] + S_tab_mat_a2[,2]) ) *100) )
+
+tableS5 <- xtable( matrix(S_tab_mat_a2, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="alpha - quantitative conservation - threshold >5" )
+
+
+### alphas t8 quant.
+S_tab_a2 <- c(length( alpha_t8$class2[ alpha_t8$class2=="IR" & alpha_t8$p_val >= 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="IR" & alpha_t8$p_val < 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTA" & alpha_t8$p_val >= 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTA" & alpha_t8$p_val < 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTD" & alpha_t8$p_val >= 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTD" & alpha_t8$p_val < 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTP" & alpha_t8$p_val >= 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTP" & alpha_t8$p_val < 0.05] ),
+            length( alpha_t8$class2[ alpha_t8$p_val >= 0.05]),
+            length( alpha_t8$class2[ alpha_t8$p_val < 0.05]) )
+
+S_tab_mat_a2 <- matrix( S_tab_a2, ncol=2, byrow=T )
+S_tab_mat_a2 <- cbind( S_tab_mat_a2, c((S_tab_mat_a2[,1] / (S_tab_mat_a2[,1] + S_tab_mat_a2[,2]) ) *100) )
+
+tableS7 <- xtable( matrix(S_tab_mat_a2, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="alpha - quantitative conservation - threshold >8" )
+
+print( table3 )
+print( tableS5 )
+print( tableS7 )
+
+
+
+
+#tandem t5 quant.
+S_tab_b2 <-c(length( tandem_t5$class2[ tandem_t5$class2=="IR" & tandem_t5$p_val >= 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="IR" & tandem_t5$p_val < 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTA" & tandem_t5$p_val >= 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTA" & tandem_t5$p_val < 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTD" & tandem_t5$p_val >= 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTD" & tandem_t5$p_val < 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTP" & tandem_t5$p_val >= 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTP" & tandem_t5$p_val < 0.05] ),
+            length( tandem_t5$class2[ tandem_t5$p_val >= 0.05]),
+            length( tandem_t5$class2[ tandem_t5$p_val < 0.05]) )
+
+S_tab_mat_b2 <- matrix( S_tab_b2, ncol=2, byrow=T )
+S_tab_mat_b2 <- cbind( S_tab_mat_b2, c((S_tab_mat_b2[,1] / (S_tab_mat_b2[,1] + S_tab_mat_b2[,2]) ) *100) )
+
+tableS6 <- xtable( matrix( S_tab_mat_b2, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="tandem - quantitative conservation - threshold >5" )
+
+# tandem t8 quant
+S_tab_b2 <-c(length( tandem_t8$class2[ tandem_t8$class2=="IR" & tandem_t8$p_val >= 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="IR" & tandem_t8$p_val < 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTA" & tandem_t8$p_val >= 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTA" & tandem_t8$p_val < 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTD" & tandem_t8$p_val >= 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTD" & tandem_t8$p_val < 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTP" & tandem_t8$p_val >= 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTP" & tandem_t8$p_val < 0.05] ),
+            length( tandem_t8$class2[ tandem_t8$p_val >= 0.05]),
+            length( tandem_t8$class2[ tandem_t8$p_val < 0.05]) )
+
+S_tab_mat_b2 <- matrix( S_tab_b2, ncol=2, byrow=T )
+S_tab_mat_b2 <- cbind( S_tab_mat_b2, c((S_tab_mat_b2[,1] / (S_tab_mat_b2[,1] + S_tab_mat_b2[,2]) ) *100) )
+
+tableS8 <- xtable( matrix( S_tab_mat_b2, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="tandem - quantitative conservation - threshold >8" )
+
+print( table4 )
+print( tableS6 )
+print( tableS8 )
+
+
+
+###################################################
+### code chunk number 44: extra_threshold_tables_summary
+###################################################
+
+### alpha t5 summary
+S_tab_a3 <- c( length( alpha_t5$class2[ alpha_t5$class2=="IR" & alpha_t5$p_val >= 0.05] ),
+      length(junction_a_t5$class2[junction_a_t5$class2=="IR"])-length(alpha_t5$class2[alpha_t5$class2=="IR" & alpha_t5$p_val >=0.05]),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTA" & alpha_t5$p_val >= 0.05] ),
+          length(junction_a_t5$class2[junction_a_t5$class2=="ALTA"])-length(alpha_t5$class2[alpha_t5$class2=="ALTA"&alpha_t5$p_val>=0.05]),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTD" & alpha_t5$p_val >= 0.05] ),
+          length(junction_a_t5$class2[junction_a_t5$class2=="ALTD"])-length(alpha_t5$class2[alpha_t5$class2=="ALTD"&alpha_t5$p_val>=0.05]),
+            length( alpha_t5$class2[ alpha_t5$class2=="ALTP" & alpha_t5$p_val >= 0.05] ),
+          length(junction_a_t5$class2[junction_a_t5$class2=="ALTP"])-length(alpha_t5$class2[alpha_t5$class2=="ALTP"&alpha_t5$p_val>=0.05]),
+            length( alpha_t5$class2[ alpha_t5$p_val >= 0.05]),
+          length(junction_a_t5$class2)-length( alpha_t5$class2[ alpha_t5$p_val>=0.05 ] ) )
+
+S_tab_mat_a3 <- matrix( S_tab_a3, ncol=2, byrow=T )
+
+S_tab_mat_a3 <- cbind( S_tab_mat_a3, c((S_tab_mat_a3[,1] / (S_tab_mat_a3[,1] + S_tab_mat_a3[,2]) ) *100) )
+
+tableS9 <- xtable( matrix(S_tab_mat_a3, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="alphas - overall conservation – threshold >5" )
+
+
+### alpha t8 summary
+S_tab_a3 <- c( length( alpha_t8$class2[ alpha_t8$class2=="IR" & alpha_t8$p_val >= 0.05] ),
+      length(junction_a_t8$class2[junction_a_t8$class2=="IR"])-length(alpha_t8$class2[alpha_t8$class2=="IR" & alpha_t8$p_val >=0.05]),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTA" & alpha_t8$p_val >= 0.05] ),
+          length(junction_a_t8$class2[junction_a_t8$class2=="ALTA"])-length(alpha_t8$class2[alpha_t8$class2=="ALTA"&alpha_t8$p_val>=0.05]),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTD" & alpha_t8$p_val >= 0.05] ),
+          length(junction_a_t8$class2[junction_a_t8$class2=="ALTD"])-length(alpha_t8$class2[alpha_t8$class2=="ALTD"&alpha_t8$p_val>=0.05]),
+            length( alpha_t8$class2[ alpha_t8$class2=="ALTP" & alpha_t8$p_val >= 0.05] ),
+          length(junction_a_t8$class2[junction_a_t8$class2=="ALTP"])-length(alpha_t8$class2[alpha_t8$class2=="ALTP"&alpha_t8$p_val>=0.05]),
+            length( alpha_t8$class2[ alpha_t8$p_val >= 0.05]),
+          length(junction_a_t8$class2)-length( alpha_t8$class2[ alpha_t8$p_val>=0.05 ] ) )
+
+S_tab_mat_a3 <- matrix( S_tab_a3, ncol=2, byrow=T )
+
+S_tab_mat_a3 <- cbind( S_tab_mat_a3, c((S_tab_mat_a3[,1] / (S_tab_mat_a3[,1] + S_tab_mat_a3[,2]) ) *100) )
+
+tableS11 <- xtable( matrix(S_tab_mat_a3, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="alphas - overall conservation – threshold >8" )
+
+### Alphas
+### full size
+print( table_5 )
+### t5
+print( tableS9 )
+### t8
+print( tableS11 )
+
+
+### Tandems
+
+### tandem t5 summary
+S_tab_a4 <- c( length( tandem_t5$class2[ tandem_t5$class2=="IR" & tandem_t5$p_val >= 0.05] ),
+      length(junction_t_t5$class2[junction_t_t5$class2=="IR"])-length(tandem_t5$class2[tandem_t5$class2=="IR" & tandem_t5$p_val >=0.05]),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTA" & tandem_t5$p_val >= 0.05] ),
+          length(junction_t_t5$class2[junction_t_t5$class2=="ALTA"])-length(tandem_t5$class2[tandem_t5$class2=="ALTA"&tandem_t5$p_val>=0.05]),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTD" & tandem_t5$p_val >= 0.05] ),
+          length(junction_t_t5$class2[junction_t_t5$class2=="ALTD"])-length(tandem_t5$class2[tandem_t5$class2=="ALTD"&tandem_t5$p_val>=0.05]),
+            length( tandem_t5$class2[ tandem_t5$class2=="ALTP" & tandem_t5$p_val >= 0.05] ),
+          length(junction_t_t5$class2[junction_t_t5$class2=="ALTP"])-length(tandem_t5$class2[tandem_t5$class2=="ALTP"&tandem_t5$p_val>=0.05]),
+            length( tandem_t5$class2[ tandem_t5$p_val >= 0.05]),
+          length(junction_t_t5$class2)-length( tandem_t5$class2[ tandem_t5$p_val>=0.05 ] ) )
+
+S_tab_mat_a4 <- matrix( S_tab_a4, ncol=2, byrow=T )
+
+S_tab_mat_a4 <- cbind( S_tab_mat_a4, c((S_tab_mat_a4[,1] / (S_tab_mat_a4[,1] + S_tab_mat_a4[,2]) ) *100) )
+
+tableS10 <- xtable( matrix(S_tab_mat_a4, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="tandems - overall conservation – threshold >5" )
+
+
+### tandem t8 summary
+S_tab_a4 <- c( length( tandem_t8$class2[ tandem_t8$class2=="IR" & tandem_t8$p_val >= 0.05] ),
+      length(junction_t_t8$class2[junction_t_t8$class2=="IR"])-length(tandem_t8$class2[tandem_t8$class2=="IR" & tandem_t8$p_val >=0.05]),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTA" & tandem_t8$p_val >= 0.05] ),
+          length(junction_t_t8$class2[junction_t_t8$class2=="ALTA"])-length(tandem_t8$class2[tandem_t8$class2=="ALTA"&tandem_t8$p_val>=0.05]),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTD" & tandem_t8$p_val >= 0.05] ),
+          length(junction_t_t8$class2[junction_t_t8$class2=="ALTD"])-length(tandem_t8$class2[tandem_t8$class2=="ALTD"&tandem_t8$p_val>=0.05]),
+            length( tandem_t8$class2[ tandem_t8$class2=="ALTP" & tandem_t8$p_val >= 0.05] ),
+          length(junction_t_t8$class2[junction_t_t8$class2=="ALTP"])-length(tandem_t8$class2[tandem_t8$class2=="ALTP"&tandem_t8$p_val>=0.05]),
+            length( tandem_t8$class2[ tandem_t8$p_val >= 0.05]),
+          length(junction_t_t8$class2)-length( tandem_t8$class2[ tandem_t8$p_val>=0.05 ] ) )
+
+S_tab_mat_a4 <- matrix( S_tab_a4, ncol=2, byrow=T )
+
+S_tab_mat_a4 <- cbind( S_tab_mat_a4, c((S_tab_mat_a4[,1] / (S_tab_mat_a4[,1] + S_tab_mat_a4[,2]) ) *100) )
+
+tableS12 <- xtable( matrix(S_tab_mat_a4, ncol=3, dimnames=list( c("IR", "ALTA", "ALTD", "ALTP", "total"), 
+                c("conserved", "not conserved", "%age conservation")) ), digits=c(0,0,0,1), 
+                caption="tandems - overall conservation – threshold >8" )
+
+
+### Tandems
+### full size
+print( table_6 )
+### t5
+print( tableS10 )
+### t8
+print( tableS12 )
+
+

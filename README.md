@@ -1,5 +1,3 @@
-petulant-dubstep
-================
 
 Analysis scripts for Tack et al. 2014 – "Transcriptome Analysis Indicates Considerable Divergence in Alternative Splicing Between Duplicated Genes in *Arabidopsis thaliana*"
 
